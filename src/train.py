@@ -16,7 +16,7 @@ from typing import Callable, Optional
 
 # Non-built-in Python libraries
 import PIL.Image
-import sklearn.metrics
+from sklearn.metrics import average_precision_score
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -66,7 +66,11 @@ class dataset_voc(Dataset):
                 if len(line) == 0:
                     continue
 
-                img, lab = line.split(" ", 1)
+                img, lab = line.split(" ", 1) # can handle multi-spacing
+                if int(lab) == 0: # difficult = presence of class, hence 1
+                    lab = 1.0
+                elif int(lab) == -1: # absence of class, hence 0
+                    lab = 0.0
                 self.labels[row, col] = float(lab)
 
             file.close()
@@ -89,6 +93,59 @@ class dataset_voc(Dataset):
         return sample
 
 
+def custom_transform(image):
+    """
+    Will:
+    * Convert PIL image to Tensor
+    * CenterCrop if either old_height/old_width is LARGER than height/width
+    * Pad if either old_height/old_width is SMALLER than height/width
+
+    Return:
+    * Image as tensor padded/cropped to size [3, 500, 500]
+    """
+    # Output dimensions
+    width = 500
+    height = 500
+
+    # Convert PIL image to tensor, because the rest of the function
+    # expects tensor
+    tensor = transforms.ToTensor()(image)
+    # tensor = transforms.Lambda(lambda image: torch.from_numpy(numpy.array(image).astype(numpy.float32)).unsqueeze(0))
+
+    old_channels, old_height, old_width = tensor.shape
+
+    # Crop if old_width/old_height is too large
+    if (old_width > width or old_height > height):
+        tensor = transforms.CenterCrop([width, height])(tensor)
+
+    # Perform padding to increase (height*width) to (max_h*max_w)
+    wpad = (width - old_width) / 2
+    hpad = (height - old_height) / 2
+    # Evaluate padding for left, right, top, bottom
+    left = wpad if (wpad % 1 == 0 or wpad == 0) else wpad + 0.5
+    right = wpad if (wpad % 1 == 0 or wpad == 0) else wpad - 0.5
+    top = hpad if (hpad % 1 == 0 or hpad == 0) else hpad + 0.5
+    bottom = hpad if (hpad % 1 == 0 or hpad == 0) else hpad - 0.5
+    # Perform padding
+    pad_fn = transforms.Pad((int(left), int(top), int(right), int(bottom)))
+    tensor = pad_fn(tensor)
+
+    # Double check that image tensor now has desired shape
+    if (
+        tensor.shape[0] != 3 or
+        tensor.shape[1] != width or
+        tensor.shape[2] != height
+    ):
+        msg = (
+            f"custom_transform() did not successfully create desired "
+            f"tensor of shape of [3, {width}, {height}], but rather created a "
+            f"tensor of shape {tensor.shape}."
+        )
+        raise ValueError(msg)
+
+    return tensor
+
+
 def train_epoch(model, trainloader, criterion, device, optimizer):
     """
     Perform one epoch (train by using all data exactly once).
@@ -104,13 +161,14 @@ def train_epoch(model, trainloader, criterion, device, optimizer):
         optimizer.zero_grad() # Zero out gradients
 
         output = model(inputs)
-        # Computing loss from estimated output and ground truth labels
+        # Computing loss from output and ground truth labels
         loss = criterion(output, labels)
 
         loss.backward() # Computes gradients
         optimizer.step() # Update values
 
         losses.append(loss.item())
+
         if (i % 100 == 0):
             print(f"Current mean of losses={np.mean(losses):1.2g}")
 
@@ -118,115 +176,94 @@ def train_epoch(model, trainloader, criterion, device, optimizer):
 
 
 def mean_avg_precision(model, dataloader, criterion, device, numcl):
-
     model.eval()
-
-    # curcount = 0
-    # accuracy = 0
-    # Prediction scores for each class. Each numpy array is a list of scores one score per image
-    concat_pred = [np.empty(shape=(0)) for _ in range(numcl)]
-    # Labels scores for each class. Each numpy array is a list of labels. one label per image
-    concat_labels = [np.empty(shape=(0)) for _ in range(numcl)]
+    concat_pred = np.zeros((0, numcl))
+    concat_labels = np.zeros((0, numcl))
     avgprecs = np.zeros(numcl) # Average precision for each class
     fnames = [] # Filenames as they come out of the dataloader
 
     with torch.no_grad():
         losses = []
+
         for batch_idx, data in enumerate(dataloader):
-            pass
-        if (batch_idx%100==0) and (batch_idx>=100):
-            print("at val batchindex: ",batch_idx)
 
-        inputs = data["image"].to(device)
-        outputs = model(inputs)
+            if (batch_idx % 100 == 0) and (batch_idx >= 100):
+                print(f"at val batchindex: {batch_idx}")
 
-        labels = data["label"]
+            inputs = data["image"].to(device)
+            outputs = model(inputs)
 
-        loss = criterion(outputs, labels.to(device) )
-        losses.append(loss.item())
+            labels = data["label"] # has shape (20,) 
 
-          #this was an accuracy computation
-          #cpuout= outputs.to("cpu")
-          #_, preds = torch.max(cpuout, 1)
-          #labels = labels.float()
-          #corrects = torch.sum(preds == labels.data)
-          #accuracy = accuracy*( curcount/ float(curcount+labels.shape[0]) ) +
-        #    corrects.float()* ( curcount/ float(curcount+labels.shape[0]) )
-          #curcount+= labels.shape[0]
+            loss = criterion(outputs, labels.to(device))
+            losses.append(loss.item())
 
-          #TODO: collect scores, labels, filenames
+            concat_pred = np.concatenate((concat_pred, outputs.cpu()), axis=0)
+            concat_labels = np.concatenate((concat_labels, labels), axis=0)
 
-
-
-    for c in range(numcl):
-        avgprecs[c]= 1#TODO
+            for fil in data["filename"]:
+                fnames.append(fil)
+            
+    for i in range(numcl):
+        avgprecs[i] = average_precision_score(concat_labels[:,i], concat_pred[:,i])
 
     return avgprecs, np.mean(losses), concat_labels, concat_pred, fnames
 
 
-def traineval2_model_nocv(dataloader_train, dataloader_test ,  model ,  criterion, optimizer, scheduler, num_epochs, device, numcl):
+def traineval2_model_nocv(dataloader_train, dataloader_test, model, criterion, optimizer, scheduler, num_epochs, device, numcl):
 
     best_measure = 0
-    best_epoch =-1
+    best_epoch = -1
 
-    trainlosses=[]
-    testlosses=[]
-    testperfs=[]
+    trainlosses = []
+    testlosses = []
+    testperfs = []
 
     for epoch in range(num_epochs):
-        print("Epoch {}/{}".format(epoch, num_epochs - 1))
-        print("-" * 10)
+        print(f"Epoch {epoch+1}/{num_epochs}")
+        print("-" * 11)
+        avgloss = train_epoch(model, dataloader_train, criterion, device, optimizer)
+        trainlosses.append(avgloss)
+
+        if scheduler is not None:
+            scheduler.step()
+
+        perfmeasure, testloss,concat_labels, concat_pred, fnames = mean_avg_precision(
+            model, dataloader_test, criterion, device, numcl
+        )
+        testlosses.append(testloss)
+        testperfs.append(perfmeasure)
+
+        print(f"at epoch: {epoch+1}. classwise perfmeasure: ", perfmeasure)
+        avgperfmeasure = np.mean(perfmeasure)
+        print(f"at epoch: {epoch+1}. avgperfmeasure {avgperfmeasure}.")
+
+        if avgperfmeasure > best_measure: #higher is better or lower is better?
+            bestweights = model.state_dict()
+            best_measure = avgperfmeasure
+            best_epoch = epoch
+            print(f"current best {best_measure} at epoch {best_epoch}.")
+
+    return best_epoch, best_measure, bestweights, trainlosses, testlosses, testperfs, concat_labels, concat_pred, fnames
 
 
-    avgloss=train_epoch(model,  dataloader_train,  criterion,  device , optimizer )
-    trainlosses.append(avgloss)
 
-    if scheduler is not None:
-        scheduler.step()
-
-    perfmeasure, testloss,concat_labels, concat_pred, fnames = evaluate_meanavgprecision(
-        model, dataloader_test, criterion, device, numcl
-    )
-    testlosses.append(testloss)
-    testperfs.append(perfmeasure)
-
-    print("at epoch: ", epoch," classwise perfmeasure ", perfmeasure)
-
-    avgperfmeasure = np.mean(perfmeasure)
-    print("at epoch: ", epoch," avgperfmeasure ", avgperfmeasure)
-
-    if avgperfmeasure > best_measure: #higher is better or lower is better?
-        bestweights= model.state_dict()
-        #TODO track current best performance measure and epoch
-
-        #TODO save your scores
-
-    return best_epoch, best_measure, bestweights, trainlosses, testlosses, testperfs
-
-
-class yourloss(nn.modules.loss._Loss):
-    def __init__(self, reduction: str = "mean") -> None:
-        #TODO
-        pass
-
-    def forward(self, input_: Tensor, target: Tensor) -> Tensor:
-        #TODO
-        return loss
-
-
-def runstuff(bool: use_gpu=False) -> None:
+def runstuff(use_gpu=False):
 
     config = dict()
+    root_dir = "/itf-fi-ml/shared/IN5400/dataforall/mandatory1/VOCdevkit/VOC2012/"
     # Define configuration parameters
     config["use_gpu"] = use_gpu
     config["lr"] = 0.005
     config["batchsize_train"] = 16
     config["batchsize_val"] = 64
-    config["maxnumepochs"] = 35
+    config["maxnumepochs"] = 1
     config["scheduler_stepsize"] = 10
     config["scheduler_factor"] = 0.3
     # kind of a dataset property
-    config["numcl"]=20
+    config["numcl"] = 20
+
+    class_names = PascalVOC(root_dir).list_image_sets()
 
     # data augmentations
     data_transforms = {
@@ -249,12 +286,12 @@ def runstuff(bool: use_gpu=False) -> None:
     # Datasets
     image_datasets={}
     image_datasets["train"] = dataset_voc(
-        root_dir='/itf-fi-ml/shared/IN5400/dataforall/mandatory1/VOCdevkit/VOC2012/',
+        root_dir=root_dir,
         trvaltest="train",
         transform=data_transforms["train"]
     )
     image_datasets["val"] = dataset_voc(
-        root_dir='/itf-fi-ml/shared/IN5400/dataforall/mandatory1/VOCdevkit/VOC2012/',
+        root_dir=root_dir,
         trvaltest="val",
         transform=data_transforms["val"]
     )
@@ -263,13 +300,13 @@ def runstuff(bool: use_gpu=False) -> None:
     dataloaders = {}
     dataloaders["train"] = torch.utils.data.DataLoader(
         image_datasets["train"],
-        batch_size=batchsize_tr,
+        batch_size=config["batchsize_train"],
         shuffle=True,
         num_workers=1
     )
     dataloaders["val"] = torch.utils.data.DataLoader(
         image_datasets["val"],
-        batch_size=batchsize_tr,
+        batch_size=config["batchsize_val"],
         shuffle=True,
         num_workers=1
     )
@@ -280,37 +317,56 @@ def runstuff(bool: use_gpu=False) -> None:
     else:
         device = torch.device("cpu")
 
-    model = models.resnet18(pretrained=True) # pretrained resnet18
+
+    model = models.resnet18(pretrained=True) # Pretrained resnet18
     num_ftrs = model.fc.in_features
-    # overwrite last linear layer
-    model.fc = torch.nn.Linear(num_ftrs, 20)
+    model.fc = torch.nn.Linear(num_ftrs, config["numcl"]) # Add new fully connected layer
     model.fc.reset_parameters()
     model = model.to(device)
 
-    lossfct = yourloss()
-    losscriterion = torch.nn.BCEWithLogitsLoss(
-        weight=None, size_average=None, reduce=None, reduction="mean")
+    losscriterion = torch.nn.BCEWithLogitsLoss(reduction="mean")
 
-    #TODO
+
     # Observe that all parameters are being optimized
-    someoptimizer = 1#
-    optimizer = optim.SGD(model.fc.parameters(), lr=lr, momentum=0.9)
+    optimizer = optim.SGD(model.fc.parameters(), lr=config["lr"], momentum=0.9)
 
     # Decay LR by a factor of 0.3 every X epochs
-    #TODO
-    somelr_scheduler = 1#
+    somelr_scheduler = lr_scheduler.StepLR(
+        optimizer, 
+        step_size=config["scheduler_stepsize"], 
+        gamma=config["scheduler_factor"]
+    )
+    
 
-    best_epoch, best_measure, bestweights, trainlosses, testlosses, testperfs = traineval2_model_nocv(
+    best_epoch, best_measure, bestweights, trainlosses, testlosses, testperfs, concat_labels, concat_pred, fnames = traineval2_model_nocv(
         dataloaders["train"],
         dataloaders["val"],
         model,
-        lossfct,
-        someoptimizer,
+        losscriterion,
+        optimizer,
         somelr_scheduler,
         num_epochs = config["maxnumepochs"],
         device = device,
         numcl = config["numcl"]
     )
+
+    # Predicitions where there are presence of object (hence multiply)
+    sorted_scores = np.argsort(concat_pred * concat_labels, axis=0)
+
+    
+    N = 3 # for 3 classes
+    for random_class in np.random.permutation(20)[:N]:
+        top = int(sorted_scores[-1,random_class])
+        # worst = int(sorted_scores[0,random_class])
+
+        best_image_path = Path(root_dir) / "JPEGImages" / (fnames[top] + ".jpg")
+        best_image = PIL.Image.open(best_image_path, "r").convert("RGB")
+        plt.imshow(best_image)
+        plt.title(f"Best predicted image for \n{class_names[random_class]}, prediction={concat_pred[top,random_class]:1.3}")
+        plt.savefig(f"best_{class_names[random_class]}.jpg")
+
+    
+    
 
 
 ###########

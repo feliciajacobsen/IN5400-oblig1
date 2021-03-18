@@ -191,7 +191,7 @@ def mean_avg_precision(model, dataloader, criterion, device, numcl):
                 print(f"at val batchindex: {batch_idx}")
 
             inputs = data["image"].to(device)
-            outputs = model(inputs)
+            outputs = torch.nn.Sigmoid()(model(inputs))
 
             labels = data["label"] # has shape (20,) 
 
@@ -242,7 +242,7 @@ def traineval2_model_nocv(dataloader_train, dataloader_test, model, criterion, o
             bestweights = model.state_dict()
             best_measure = avgperfmeasure
             best_epoch = epoch
-            print(f"current best {best_measure} at epoch {best_epoch}.")
+            print(f"current best {best_measure} at epoch {best_epoch+1}.")
 
     return best_epoch, best_measure, bestweights, trainlosses, testlosses, testperfs, concat_labels, concat_pred, fnames
 
@@ -257,7 +257,7 @@ def runstuff(use_gpu=False):
     config["lr"] = 0.005
     config["batchsize_train"] = 16
     config["batchsize_val"] = 64
-    config["maxnumepochs"] = 1
+    config["maxnumepochs"] = 35
     config["scheduler_stepsize"] = 10
     config["scheduler_factor"] = 0.3
     # kind of a dataset property
@@ -350,22 +350,46 @@ def runstuff(use_gpu=False):
         numcl = config["numcl"]
     )
 
-    # Predicitions where there are presence of object (hence multiply)
-    sorted_scores = np.argsort(concat_pred * concat_labels, axis=0)
+    for c in class_names:
+        directory = "./figures/" + c
+        top_dir = directory + "/top"
+        bottom_dir = directory + "/bottom"
+        if not os.path.exists(directory):
+            os.makedirs(directory)
+        if not os.path.exists(top_dir):
+            os.makedirs(top_dir)
+        if not os.path.exists(bottom_dir):
+            os.makedirs(bottom_dir)
 
-    
-    N = 3 # for 3 classes
-    for random_class in np.random.permutation(20)[:N]:
-        top = int(sorted_scores[-1,random_class])
-        # worst = int(sorted_scores[0,random_class])
+    image_path = Path(root_dir) / "JPEGImages" 
+    N_classes = 20 # Pick N random classes
+    top_bottom_N = 10 # 
+    for c in np.random.permutation(20)[:N_classes]: # Loop over N classes
+        cl_name = class_names[c]
+        # Obtain sorted indices of the prediction scores of ONE class
+        sorted_indices = np.argsort(concat_pred[:,c], axis=0)
+        # Sort all predicition scores for ONE class from lowest to highest
+        sorted_preds = concat_pred[sorted_indices, c]
+        # Sort ground truth labels accordingly
+        sorted_labels = concat_labels[sorted_indices, c]
 
-        best_image_path = Path(root_dir) / "JPEGImages" / (fnames[top] + ".jpg")
-        best_image = PIL.Image.open(best_image_path, "r").convert("RGB")
-        plt.imshow(best_image)
-        plt.title(f"Best predicted image for \n{class_names[random_class]}, prediction={concat_pred[top,random_class]:1.3}")
-        plt.savefig(f"best_{class_names[random_class]}.jpg")
+        # Collect sorted scores ONLY for when this class is present (avoid ground truth=absence)
+        sorted_indices_where_ground_truth_present = []
 
-    
+        for label, idx in zip(sorted_labels, sorted_indices):
+            if label != 0:
+                sorted_indices_where_ground_truth_present.append(int(idx)) # Sorted indices (but zero-labels are disregarded)
+        
+        for j in range(top_bottom_N):
+
+            top_j = sorted_indices_where_ground_truth_present[-(j+1)]
+            top_image = PIL.Image.open(image_path / (fnames[top_j] + ".jpg"), "r").convert("RGB")
+            top_image.save(f"./figures/{cl_name}/top/top_{j+1}.jpg")
+
+            bottom_j = sorted_indices_where_ground_truth_present[j]
+            bottom_image = PIL.Image.open(image_path / (fnames[bottom_j] + ".jpg"), "r").convert("RGB")
+            bottom_image.save(f"./figures/{cl_name}/bottom/bottom_{j+1}.jpg")
+
     
 
 

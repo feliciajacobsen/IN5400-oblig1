@@ -1,33 +1,11 @@
-# PyTorch stuff
-import torch
-import torch.optim as optim
-from torchvision import models, transforms
-
-# Non-built-in Python libraries
-import numpy as np
-import matplotlib.pyplot as plt
-
-# Local
-from src import train
-
+from src import task1, task2
 
 if __name__ == "__main__":
-    
-    use_gpu = True
 
- 
-    train.runstuff(use_gpu)
-    
+    # Part 1: PascalVOC dataset with ResNet18
+    root_dir = "/itf-fi-ml/shared/IN5400/dataforall/mandatory1/VOCdevkit/VOC2012/"
+    task1.runstuff(root_dir, use_gpu=True, load_model=False) # Part 1
 
-
-# TODO:
-# setup:
-# - write a dataloader for pascal VOC (train and val datasets)
-# - create model: resnet-18 with 20 outputs (20 binary classifiers)
-# - define loss: minimize 20 binary classifiers, how to do this?
-
-# results:
-# - avg precision score on validation set (one score for every of the 20 classes)
-# - GUI
-# - report: choose 3 RANDOM classes: show top-10 and worst-10 images for all of these 3 classes
-# - calculate Tailacc(t) for all 20 classes. Repeat 10-20 times with various t
+    # Part 2: ImageNet dataset with modified ResNet18 
+    # (conv2d layers with weight standardization, and modified batchnorm layers)
+    # task2.test_WSconversion(use_gpu=True, mod="A") # Part 2

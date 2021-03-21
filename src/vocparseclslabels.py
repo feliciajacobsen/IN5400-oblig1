@@ -48,9 +48,9 @@ class PascalVOC:
         filename = os.path.join(self.set_dir, cat_name + "_" + dataset + ".txt")
         df = pd.read_csv(
             filename,
-            delim_whitespace=True,
-            header=None,
-            names=['filename', 'true'])
+            delim_whitespace = True,
+            header = None,
+            names = ['filename', 'true'])
         return df
 
     def imgs_from_category_as_list(self, cat_name, dataset):
@@ -72,7 +72,7 @@ if __name__=='__main__':
 
     pv=PascalVOC('./data/VOCdevkit/VOC2012/')
 
-    cat_name='car'
-    dataset='val'
-    ls=pv.imgs_from_category_as_list(cat_name, dataset)
-    print(len(ls),ls[0])
+    cat_name = 'car'
+    dataset = 'val'
+    ls = pv.imgs_from_category_as_list(cat_name, dataset)
+    print(len(ls), ls[0])

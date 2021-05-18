@@ -1,5 +1,5 @@
 # Mandatory Assignment 1
-Mandatory assigmnent of the course "IN5400 - Machine Learning for image analysis". This uses the PascalVOC dataset from the 2012 version. The main task is to clssify each image depending on what classes appear in the images – also known as a multi-label classification problem. See the report for more details.
+Mandatory assigmnent of the course "IN5400 - Machine Learning for image analysis". This uses the PascalVOC dataset from the 2012 version. The main task is to classify each image depending on what classes appear in the images – also known as a multi-label classification problem. See the report for more details.
 
 
 ## Software Requirements
